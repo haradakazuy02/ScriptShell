@@ -15,11 +15,13 @@ object ScriptShell {
     try {
       var scriptfile : File = null;
       var noinput = false;
+      var step = false;
       var n = args.size;
       var skip = 0;
       for (i<-0 until args.size if n == args.size) {
         if (skip > 0) skip -= 1 else if (args(i).charAt(0) != '-') n = i else args(i) match {
           case "-noinput" => noinput = true;
+          case "-step" => step = true;
           case "-script" =>
             skip = 1;
             scriptfile = new File(args(i+1));
@@ -33,6 +35,7 @@ object ScriptShell {
         println("(options)");
         println(" -script [scriptfile] : 入力前に実行するスクリプトファイルを指定");
         println(" -noinput : 入力しないで終了.-scriptで実行してすぐ終了する場合に使用");
+        println(" -step : stepモードで-scriptのファイルを実行する");
         System.exit(1);
       }
       _this = new ScriptShell(args(n));
@@ -44,10 +47,12 @@ object ScriptShell {
 println("[param]" + key + " = " + value);
         _this.put(key,value);
       }
+      if (step) _this.runMode = "step";
 
       if (scriptfile != null) _this.run(new BufferedReader(new FileReader(scriptfile))) match {
         case ScriptOK => //
         case ScriptExit(code) => System.exit(code);
+        case ScriptRet(ret) => // ignore
       }
       if (!noinput) _this.shell() match {
         case ScriptExit(code) => System.exit(code);
@@ -107,13 +112,14 @@ import scala.tools.nsc.interpreter.IMain;
 
     val s = scriptname.toLowerCase;
     val buffer = if (s.contains("java")) {
+      engine.put("_this", this);
       new BracketInputBuffer
     } else if (s.contains("scala")) {
       engine.asInstanceOf[IMain].settings.usejavacp.value_$eq(true);
-      engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
       engine.eval("import scala.collection.convert.WrapAsScala._");
       engine.eval("import scala.collection.convert.WrapAsJava._");
       engine.eval("import scala.sys.process._");
+      engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
       new BracketInputBuffer
     }  else new InputBuffer;
     (engine, buffer);
@@ -122,7 +128,7 @@ import scala.tools.nsc.interpreter.IMain;
     scriptEngine.put(key, value);
   }
   def get(key:String) = {
-    scriptEngine.get(key);
+    scriptEngine.eval(key);
   }
   def bufferClear() {
     buffer.clear;
@@ -180,7 +186,7 @@ import scala.tools.nsc.interpreter.IMain;
         }
       case ":step" => runMode = "step";
       case ":continue" => runMode = "run";
-      case x => throw new IllegalArgumentException("unknown command " + x);
+      case x => println("unknown command " + x);
     }
     ScriptOK;
   }
@@ -206,7 +212,9 @@ import scala.tools.nsc.interpreter.IMain;
         case "" => // skip
         case line =>
           var debug = (runMode == "step");
+          println(line);
           while (debug) {
+            print("step>");
             val l = stdreader.readLine;
             if (l == "") debug = false else runline(l) match {
               case ScriptExit(code) => return ScriptExit(code);
@@ -225,7 +233,7 @@ import scala.tools.nsc.interpreter.IMain;
           }
       }
     }
-    preval
+    ScriptRet(preval);
   }
   def shell() : ScriptExit = {
     val reader = stdreader;
