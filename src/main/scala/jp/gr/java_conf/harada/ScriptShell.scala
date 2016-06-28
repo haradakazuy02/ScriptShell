@@ -2,6 +2,7 @@ package jp.gr.java_conf.harada;
 import scala.collection.convert.WrapAsScala._
 import javax.script._
 import java.io._
+import scala.tools.nsc.interpreter.IMain;
 
 case class ScriptOK();
 case class ScriptNone();
@@ -10,7 +11,6 @@ case class ScriptException(exception:Throwable);
 case class ScriptExit(code:Int);
 
 object ScriptShell {
-  var _this : ScriptShell = null;
   def main(args:Array[String]) {
     try {
       var scriptfile : File = null;
@@ -38,7 +38,7 @@ object ScriptShell {
         println(" -step : stepモードで-scriptのファイルを実行する");
         System.exit(1);
       }
-      _this = new ScriptShell(args(n));
+      val _this = new ScriptShell(args(n));
 
       val params = for (i<-(n+1) until args.size) yield {
         val k = args(i).indexOf('=');
@@ -103,6 +103,7 @@ class BracketInputBuffer extends InputBuffer {
 class ScriptShell(scriptname:String) {
   val (scriptEngine, buffer) = getEngine(scriptname);
   var runMode = "run";
+  var isScala = false;
 import scala.tools.nsc.interpreter.IMain;
 
   def getEngine(scriptname:String) = {
@@ -120,6 +121,8 @@ import scala.tools.nsc.interpreter.IMain;
       engine.eval("import scala.collection.convert.WrapAsJava._");
       engine.eval("import scala.sys.process._");
       engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
+      isScala = true;
+      engine.put("_this", this);
       new BracketInputBuffer
     }  else new InputBuffer;
     (engine, buffer);
@@ -127,23 +130,32 @@ import scala.tools.nsc.interpreter.IMain;
   def put(key:String, value:AnyRef) {
     scriptEngine.put(key, value);
   }
+  def putWithType(key:String, value:AnyRef, typename:String) {
+    scriptEngine.put(key, value);
+  }
   def get(key:String) = {
     scriptEngine.eval(key);
+  }
+  def getVariableNames() : Iterable[String] = scriptEngine match {
+    case im : IMain => im.namedDefinedTerms.map(_.toString);
+    case _ => 
+//      scriptEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE).keySet;
+      throw new UnsupportedOperationException("I can't get variable names for Nashorn.");
   }
   def bufferClear() {
     buffer.clear;
   }
   def runline(line:String) : Any = {
-    if (line == "?") runCommand(List(":help")) else 
-    if (line.startsWith(":")) runCommand(line.split("\\s+").toList) else
-    if (!buffer.addLine(line)) ScriptNone else {
-      try {
+    try {
+      if (line == "?") runCommand(List(":help")) else 
+      if (line.startsWith(":")) runCommand(line.split("\\s+").toList) else
+      if (!buffer.addLine(line)) ScriptNone else {
         val ret = runscript(line);
         buffer.clear;
         ScriptRet(ret);
-      } catch {
-        case t:Throwable => ScriptException(t);
       }
+    } catch {
+      case t:Throwable => ScriptException(t);
     }
   }
   def runscript(line:String) = scriptEngine.eval(buffer.lines.mkString("\n"));
@@ -152,10 +164,9 @@ import scala.tools.nsc.interpreter.IMain;
     Class.forName(name);
   } catch {
     case ce:ClassNotFoundException =>
-      val obj = scriptEngine.get(name).asInstanceOf[AnyRef];
+      val obj = get(name).asInstanceOf[AnyRef];
       obj.getClass;
   }
-
   def runCommand(command:List[String]) : Any = {
     command.head match {
       case ":scriptname" => println(scriptEngine.getFactory.getEngineName);
@@ -164,26 +175,26 @@ import scala.tools.nsc.interpreter.IMain;
       case ":pre" => 
         if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
         buffer.show();
-      case ":quit" => 
-        return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+      case ":quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
       case ":help" => 
         val check : String = if (command.size == 1) null else command(1);
-        for (l<-helpLines if (check == null) || l._1.matches(check)) println(":" + l._1 + " =>" + l._2);
+        for (l<-helpLines if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
       case ":method" => 
         val cls = arg2Class(command(1));
         val check : String = if (2 < command.size) command(2) else null;
         var i = 0;
-        for (m<-cls.getDeclaredMethods) {
+        for (m<-cls.getMethods) {
           i += 1;
           if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
         }
       case ":constructor" => 
         val cls = arg2Class(command(1));
         var i = 0;
-        for (m<-cls.getDeclaredConstructors) {
+        for (m<-cls.getConstructors) {
           i += 1;
           println("[" + i + "]" + m);
         }
+      case ":vars" => println(getVariableNames.mkString(", "));
       case ":step" => runMode = "step";
       case ":continue" => runMode = "run";
       case x => println("unknown command " + x);
@@ -192,12 +203,13 @@ import scala.tools.nsc.interpreter.IMain;
   }
   val helpLines = List(
         "scriptname"->"show script engine name.",
-        "buffer"->"show the buffer content with which it inputs with the next line.",
+        "buffer"->"show the buffer content with which it inputs the next line.",
         "clear"->"clear the buffer content",
         "pre"->"remove the last line of buffer content",
-        "help (reg)"->"show help for command whose name mathes (reg).",
+        "help (check)"->"show help for command whose help name (with params) contains (check).",
         "method [classname/variable name] (check)"->"show methods whose name contains (check)",
         "constructor [classname/variable name]"->"show constructors",
+        "vars"->"show the variable names.(only scala)",
         "quit"->"exit script shell.");
 
 

@@ -1,7 +1,6 @@
 # ScriptShell
 
-    It's a tool to run script. 
-    
+    It's a tool to run script.
 
 ## usage
 
@@ -25,3 +24,18 @@
 
     - name=value
         set the value to the variable for the name.
+
+# remark
+
+    For javascript, it recognize block end by bracket. So you should not input:
+
+    for (i=0;i<10;i++)
+    {
+      print(i);
+    }
+
+    but should:
+
+    for (i=0;i<10;i++) {
+      print(i);
+    }
