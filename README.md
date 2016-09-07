@@ -12,10 +12,10 @@
 
 - Command
 
-    target\pack\bin\script-shell (options) [script] (name1=value1) (name2=value2)..
+    target\pack\bin\script-shell (options) \[script] (name1=value1) (name2=value2)..
 
     - options
-        -script [scriptfile] : run script file
+        -script \[scriptfile] : run script file
         -noinput : not run shell
 
     - script

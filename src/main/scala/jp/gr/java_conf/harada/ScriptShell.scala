@@ -15,16 +15,14 @@ object ScriptShell {
     try {
       var scriptfile : File = null;
       var noinput = false;
-      var step = false;
+      var inits : List[String] = Nil;
       var n = args.size;
       var skip = 0;
       for (i<-0 until args.size if n == args.size) {
         if (skip > 0) skip -= 1 else if (args(i).charAt(0) != '-') n = i else args(i) match {
           case "-noinput" => noinput = true;
-          case "-step" => step = true;
-          case "-script" =>
-            skip = 1;
-            scriptfile = new File(args(i+1));
+          case "-init" => skip = 1; inits :+= args(i+1);
+          case "-script" => skip = 1; scriptfile = new File(args(i+1));
           case _ => println("unknown option : " + args(i));
         }
       }
@@ -34,8 +32,8 @@ object ScriptShell {
         println("javascript/scalaを指定");
         println("(options)");
         println(" -script [scriptfile] : 入力前に実行するスクリプトファイルを指定");
-        println(" -noinput : 入力しないで終了.-scriptで実行してすぐ終了する場合に使用");
-        println(" -step : stepモードで-scriptのファイルを実行する");
+        println(" -noinput : 入力待ちにしないで終了.-scriptで実行後すぐ終了する場合に使用");
+        println(" -init [line] : 複数回指定可.起動直後に[line]を実行する");
         System.exit(1);
       }
       val _this = new ScriptShell(args(n));
@@ -47,7 +45,7 @@ object ScriptShell {
 println("[param]" + key + " = " + value);
         _this.put(key,value);
       }
-      if (step) _this.runMode = "step";
+      for (l<-inits) _this.runline(l);
 
       if (scriptfile != null) _this.run(new BufferedReader(new FileReader(scriptfile))) match {
         case ScriptOK => //
@@ -122,7 +120,11 @@ import scala.tools.nsc.interpreter.IMain;
       engine.eval("import scala.sys.process._");
       engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
       isScala = true;
-      engine.put("_this", this);
+      val m = engine.asInstanceOf[scala.tools.nsc.interpreter.IMain];
+      m.bind("_this", "jp.gr.java_conf.harada.ScriptShell", this);
+      engine.eval("""implicit class ScriptShellCommand(private val sc:StringContext) extends AnyVal {
+  def cmd(args:String*) : Any = _this.command(sc.standardInterpolator((s:String)=>s, args));
+}""");
       new BracketInputBuffer
     }  else new InputBuffer;
     (engine, buffer);
@@ -147,8 +149,8 @@ import scala.tools.nsc.interpreter.IMain;
   }
   def runline(line:String) : Any = {
     try {
-      if (line == "?") runCommand(List(":help")) else 
-      if (line.startsWith(":")) runCommand(line.split("\\s+").toList) else
+      if (line == "?") runCommand(List("help")) else 
+      if (line.startsWith(":")) command(line.substring(1)) else
       if (!buffer.addLine(line)) ScriptNone else {
         val ret = runscript(line);
         buffer.clear;
@@ -167,19 +169,68 @@ import scala.tools.nsc.interpreter.IMain;
       val obj = get(name).asInstanceOf[AnyRef];
       obj.getClass;
   }
+  def parseParams(line:String) : List[String] = {
+    def tos(a:Any) : String = a match {
+      case null => "";
+      case s : String => s;
+      case x => x.toString;
+    }
+    var retlist : List[String] = Nil;
+    var mode = ' ';
+    var sb = new StringBuilder;
+    for (c<-line) mode match {
+      case ' ' => c match {
+        case ' ' => if (sb.size > 0) {retlist :+= sb.toString; sb = new StringBuilder;}
+        case '\"' => if (sb.size > 0) sb += c else mode = c;
+        case '\'' => if (sb.size > 0) sb += c else mode = c;
+        case '`' => if (sb.size > 0) sb += c else mode = c;
+        case _ => sb += c;
+      }
+      case '\"' => c match {
+        case '\"' => mode = ' '; retlist :+= sb.toString;
+        case '\\' => mode = '\\';
+        case _ => sb += c;
+      }
+      case '\'' => c match {
+        case '\'' => mode = ' '; retlist :+= sb.toString;
+        case _ => sb += c;
+      }
+      case '`' => c match {
+        case '`' => 
+          retlist :+= tos(command(sb.toString));
+          mode = ' ';
+        case _ => sb += c;
+      }
+      case '\\' => c match {
+        case '\"' => mode = '\"'; sb += c;
+        case '\\' => mode = '\"'; sb += c;
+        case x => throw new IllegalArgumentException("unknow escape : \\"  + x);
+      }
+    }
+    if (sb.size > 0) retlist :+= sb.toString;
+    retlist;
+  }
+  def command(line:String) = runCommand(parseParams(line));
   def runCommand(command:List[String]) : Any = {
     command.head match {
-      case ":scriptname" => println(scriptEngine.getFactory.getEngineName);
-      case ":buffer" => buffer.show();
-      case ":clear" => buffer.clear;
-      case ":pre" => 
+      case "quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+      case "exit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+      case "scriptname" => println(scriptEngine.getFactory.getEngineName);
+      case "buffer" => buffer.show();
+      case "buffer" => buffer.show();
+      case "clear" => buffer.clear;
+      case "mode" => if (command.size == 0) println("[mode]" + runMode) else command(1) match {
+        case "run" => runMode = command(1);
+        case "step" => runMode = command(1);
+        case "exception" => runMode = command(1);
+      }
+      case "pre" => 
         if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
         buffer.show();
-      case ":quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
-      case ":help" => 
+      case "help" => 
         val check : String = if (command.size == 1) null else command(1);
         for (l<-helpLines if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
-      case ":method" => 
+      case "method" => 
         val cls = arg2Class(command(1));
         val check : String = if (2 < command.size) command(2) else null;
         var i = 0;
@@ -187,22 +238,23 @@ import scala.tools.nsc.interpreter.IMain;
           i += 1;
           if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
         }
-      case ":constructor" => 
+      case "constructor" => 
         val cls = arg2Class(command(1));
         var i = 0;
         for (m<-cls.getConstructors) {
           i += 1;
           println("[" + i + "]" + m);
         }
-      case ":vars" => println(getVariableNames.mkString(", "));
-      case ":step" => runMode = "step";
-      case ":continue" => runMode = "run";
+      case "vars" => println(getVariableNames.mkString(", "));
+      case "step" => runMode = "step";
+      case "continue" => runMode = "run";
       case x => println("unknown command " + x);
     }
     ScriptOK;
   }
   val helpLines = List(
         "scriptname"->"show script engine name.",
+        "mode [run/step/exception]"->"set run mode in running script file.",
         "buffer"->"show the buffer content with which it inputs the next line.",
         "clear"->"clear the buffer content",
         "pre"->"remove the last line of buffer content",
@@ -230,7 +282,9 @@ import scala.tools.nsc.interpreter.IMain;
             val l = stdreader.readLine;
             if (l == "") debug = false else runline(l) match {
               case ScriptExit(code) => return ScriptExit(code);
-              case ScriptException(e) => e.printStackTrace(System.out);
+              case ScriptException(e) => 
+                e.printStackTrace(System.out);
+                if (runMode == "exception") runMode = "step";
               case _ => // ignore
             }
           }
