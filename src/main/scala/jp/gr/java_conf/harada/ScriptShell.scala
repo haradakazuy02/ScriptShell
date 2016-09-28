@@ -101,8 +101,6 @@ class BracketInputBuffer extends InputBuffer {
 class ScriptShell(scriptname:String) {
   val (scriptEngine, buffer) = getEngine(scriptname);
   var runMode = "run";
-  var isScala = false;
-import scala.tools.nsc.interpreter.IMain;
 
   def getEngine(scriptname:String) = {
     val sem = new ScriptEngineManager();
@@ -114,14 +112,13 @@ import scala.tools.nsc.interpreter.IMain;
       engine.put("_this", this);
       new BracketInputBuffer
     } else if (s.contains("scala")) {
-      engine.asInstanceOf[IMain].settings.usejavacp.value_$eq(true);
+      val imain = engine.asInstanceOf[IMain];
+      imain.settings.usejavacp.value_$eq(true);
       engine.eval("import scala.collection.convert.WrapAsScala._");
       engine.eval("import scala.collection.convert.WrapAsJava._");
       engine.eval("import scala.sys.process._");
       engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
-      isScala = true;
-      val m = engine.asInstanceOf[scala.tools.nsc.interpreter.IMain];
-      m.bind("_this", "jp.gr.java_conf.harada.ScriptShell", this);
+      imain.bind("_this", "jp.gr.java_conf.harada.ScriptShell", this);
       engine.eval("""implicit class ScriptShellCommand(private val sc:StringContext) extends AnyVal {
   def cmd(args:String*) : Any = _this.command(sc.standardInterpolator((s:String)=>s, args));
 }""");
@@ -129,11 +126,13 @@ import scala.tools.nsc.interpreter.IMain;
     }  else new InputBuffer;
     (engine, buffer);
   }
+  var iMain : IMain = if (scriptEngine.isInstanceOf[IMain]) scriptEngine.asInstanceOf[IMain] else null;
+
   def put(key:String, value:AnyRef) {
     scriptEngine.put(key, value);
   }
   def putWithType(key:String, value:AnyRef, typename:String) {
-    scriptEngine.put(key, value);
+    if (iMain != null) iMain.bind(key, typename, value) else scriptEngine.put(key, value);
   }
   def get(key:String) = {
     scriptEngine.eval(key);

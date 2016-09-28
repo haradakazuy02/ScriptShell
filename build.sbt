@@ -1,6 +1,6 @@
 lazy val root = (project in file(".")).settings(
  organization := "jp.gr.java_conf.harada",
- name := "scriptShell",
+ name := "scriptshell",
  version := "0.2-SNAPSHOT",
  scalaVersion := "2.11.8",
  scalacOptions ++= Seq("-encoding", "MS932"),
