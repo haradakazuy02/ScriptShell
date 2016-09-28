@@ -34,6 +34,7 @@ object ScriptShell {
         println(" -script [scriptfile] : 入力前に実行するスクリプトファイルを指定");
         println(" -noinput : 入力待ちにしないで終了.-scriptで実行後すぐ終了する場合に使用");
         println(" -init [line] : 複数回指定可.起動直後に[line]を実行する");
+        println(" 例. -init \":mode exception\" : 例外でbreakする");
         System.exit(1);
       }
       val _this = new ScriptShell(args(n));
@@ -134,9 +135,8 @@ class ScriptShell(scriptname:String) {
   def putWithType(key:String, value:AnyRef, typename:String) {
     if (iMain != null) iMain.bind(key, typename, value) else scriptEngine.put(key, value);
   }
-  def get(key:String) = {
-    scriptEngine.eval(key);
-  }
+  def eval(key:String) = scriptEngine.eval(key);
+  def get(key:String) = scriptEngine.eval(key);
   def getVariableNames() : Iterable[String] = scriptEngine match {
     case im : IMain => im.namedDefinedTerms.map(_.toString);
     case _ => 
@@ -151,7 +151,7 @@ class ScriptShell(scriptname:String) {
       if (line == "?") runCommand(List("help")) else 
       if (line.startsWith(":")) command(line.substring(1)) else
       if (!buffer.addLine(line)) ScriptNone else {
-        val ret = runscript(line);
+        val ret = scriptEngine.eval(buffer.lines.mkString("\n"));
         buffer.clear;
         ScriptRet(ret);
       }
@@ -159,7 +159,6 @@ class ScriptShell(scriptname:String) {
       case t:Throwable => ScriptException(t);
     }
   }
-  def runscript(line:String) = scriptEngine.eval(buffer.lines.mkString("\n"));
 
   private def arg2Class(name:String) = try {
     Class.forName(name);
@@ -218,11 +217,11 @@ class ScriptShell(scriptname:String) {
       case "buffer" => buffer.show();
       case "buffer" => buffer.show();
       case "clear" => buffer.clear;
-      case "mode" => if (command.size == 0) println("[mode]" + runMode) else command(1) match {
+      case "mode" => if (command.size <= 1) println("[mode]" + runMode) else command(1) match {
         case "run" => runMode = command(1);
         case "step" => runMode = command(1);
         case "exception" => runMode = command(1);
-      }
+        }
       case "pre" => 
         if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
         buffer.show();
@@ -246,7 +245,7 @@ class ScriptShell(scriptname:String) {
         }
       case "vars" => println(getVariableNames.mkString(", "));
       case "step" => runMode = "step";
-      case "continue" => runMode = "run";
+      case "continue" => runMode = "exception";
       case x => println("unknown command " + x);
     }
     ScriptOK;
@@ -281,9 +280,7 @@ class ScriptShell(scriptname:String) {
             val l = stdreader.readLine;
             if (l == "") debug = false else runline(l) match {
               case ScriptExit(code) => return ScriptExit(code);
-              case ScriptException(e) => 
-                e.printStackTrace(System.out);
-                if (runMode == "exception") runMode = "step";
+              case ScriptException(e) => e.printStackTrace(System.out);
               case _ => // ignore
             }
           }
@@ -295,6 +292,7 @@ class ScriptShell(scriptname:String) {
             case ScriptException(e) =>
               bufferClear;
               e.printStackTrace(System.out);
+              if (runMode == "exception") runMode = "step";
           }
       }
     }
