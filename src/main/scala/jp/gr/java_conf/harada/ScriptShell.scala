@@ -14,27 +14,27 @@ object ScriptShell {
   def main(args:Array[String]) {
     try {
       var scriptfile : File = null;
-      var noinput = false;
+      var interpreter = false;
       var inits : List[String] = Nil;
       var n = args.size;
       var skip = 0;
       for (i<-0 until args.size if n == args.size) {
         if (skip > 0) skip -= 1 else if (args(i).charAt(0) != '-') n = i else args(i) match {
-          case "-noinput" => noinput = true;
+          case "-i" => interpreter = true;
           case "-init" => skip = 1; inits :+= args(i+1);
           case "-script" => skip = 1; scriptfile = new File(args(i+1));
           case _ => println("unknown option : " + args(i));
         }
       }
       if (n >= args.size) {
-        println("ScriptShell (options) [scriptname] (name1=param1)..");
-        println("[scriptname]でScriptEngineを取得しスクリプト実行する");
-        println("javascript/scalaを指定");
+        println("ScriptShell (options) [scala/javascript] (name1=param1)..");
+        println("[scala/javascript] specifies script language running.");
         println("(options)");
-        println(" -script [scriptfile] : 入力前に実行するスクリプトファイルを指定");
-        println(" -noinput : 入力待ちにしないで終了.-scriptで実行後すぐ終了する場合に使用");
-        println(" -init [line] : 複数回指定可.起動直後に[line]を実行する");
-        println(" 例. -init \":mode exception\" : 例外でbreakする");
+        println(" -script [scriptfile] : run the content of [scriptfile].");
+        println(" -i : run on interpreter mode after running the [scriptfile].");
+        println(" -init [line] : run the script [line] before running [scriptfile].");
+        println("       You can specify multiple options of this type.");
+        println("   e.g. -init \":mode exception\" -init \"import java.io._\"");
         System.exit(1);
       }
       val _this = new ScriptShell(args(n));
@@ -53,7 +53,7 @@ println("[param]" + key + " = " + value);
         case ScriptExit(code) => System.exit(code);
         case ScriptRet(ret) => // ignore
       }
-      if (!noinput) _this.shell() match {
+      if (interpreter) _this.shell() match {
         case ScriptExit(code) => System.exit(code);
       }
       System.exit(0);
