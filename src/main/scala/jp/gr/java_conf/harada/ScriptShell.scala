@@ -16,22 +16,25 @@ object ScriptShell {
       var scriptfile : File = null;
       var interpreter = false;
       var inits : List[String] = Nil;
+      var silent = false;
       var n = args.size;
       var skip = 0;
       for (i<-0 until args.size if n == args.size) {
         if (skip > 0) skip -= 1 else if (args(i).charAt(0) != '-') n = i else args(i) match {
           case "-i" => interpreter = true;
           case "-init" => skip = 1; inits :+= args(i+1);
+          case "-silent" => silent = true;
           case "-script" => skip = 1; scriptfile = new File(args(i+1));
           case _ => println("unknown option : " + args(i));
         }
       }
       if (n >= args.size) {
-        println("ScriptShell (options) [scala/javascript] (name1=param1)..");
+        println("script-shell (options) [scala/javascript] (name1=param1)..");
         println("[scala/javascript] specifies script language running.");
         println("(options)");
         println(" -script [scriptfile] : run the content of [scriptfile].");
         println(" -i : run on interpreter mode after running the [scriptfile].");
+        println(" -silent : not show running line.(= -init \":mode silent\"))");
         println(" -init [line] : run the script [line] before running [scriptfile].");
         println("       You can specify multiple options of this type.");
         println("   e.g. -init \":mode exception\" -init \"import java.io._\"");
@@ -43,15 +46,17 @@ object ScriptShell {
         val k = args(i).indexOf('=');
         val key = args(i).substring(0, k);
         val value = args(i).substring(k+1);
-println("[param]" + key + " = " + value);
+if (!silent) println("[param]" + key + " = " + value);
         _this.put(key,value);
       }
       for (l<-inits) _this.runline(l);
-
-      if (scriptfile != null) _this.run(new BufferedReader(new FileReader(scriptfile))) match {
+      if (silent) _this.runMode = "silent";
+      if (scriptfile != null) {
+        _this.runFile(scriptfile) match {
         case ScriptOK => //
         case ScriptExit(code) => System.exit(code);
         case ScriptRet(ret) => // ignore
+        }
       }
       if (interpreter) _this.shell() match {
         case ScriptExit(code) => System.exit(code);
@@ -102,6 +107,9 @@ class BracketInputBuffer extends InputBuffer {
 class ScriptShell(scriptname:String) {
   val (scriptEngine, buffer) = getEngine(scriptname);
   var runMode = "run";
+  var lastVal : Any = null;
+  var callStack : List[File] = Nil;
+  def base : File = if (callStack == Nil) null else callStack.head;
 
   def getEngine(scriptname:String) = {
     val sem = new ScriptEngineManager();
@@ -160,12 +168,18 @@ class ScriptShell(scriptname:String) {
     }
   }
 
-  private def arg2Class(name:String) = try {
-    Class.forName(name);
+  private def arg2Class(params:List[String]) = try {
+    Class.forName(params.head);
   } catch {
     case ce:ClassNotFoundException =>
-      val obj = get(name).asInstanceOf[AnyRef];
-      obj.getClass;
+      try {
+        val obj = get(params.head).asInstanceOf[AnyRef];
+        obj.getClass;
+      } catch {
+        case e : Exception => 
+          val obj = eval(params.mkString(" "));
+          obj.getClass;
+      }
   }
   def parseParams(line:String) : List[String] = {
     def tos(a:Any) : String = a match {
@@ -218,6 +232,7 @@ class ScriptShell(scriptname:String) {
       case "buffer" => buffer.show();
       case "clear" => buffer.clear;
       case "mode" => if (command.size <= 1) println("[mode]" + runMode) else command(1) match {
+        case "silent" => runMode = command(1);
         case "run" => runMode = command(1);
         case "step" => runMode = command(1);
         case "exception" => runMode = command(1);
@@ -229,7 +244,7 @@ class ScriptShell(scriptname:String) {
         val check : String = if (command.size == 1) null else command(1);
         for (l<-helpLines if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
       case "method" => 
-        val cls = arg2Class(command(1));
+        val cls = arg2Class(command.tail);
         val check : String = if (2 < command.size) command(2) else null;
         var i = 0;
         for (m<-cls.getMethods) {
@@ -237,7 +252,7 @@ class ScriptShell(scriptname:String) {
           if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
         }
       case "constructor" => 
-        val cls = arg2Class(command(1));
+        val cls = arg2Class(command.tail);
         var i = 0;
         for (m<-cls.getConstructors) {
           i += 1;
@@ -246,35 +261,46 @@ class ScriptShell(scriptname:String) {
       case "vars" => println(getVariableNames.mkString(", "));
       case "step" => runMode = "step";
       case "continue" => runMode = "exception";
+      case "call" =>
+        runFile(new File(command(1))) match {
+        case ScriptOK => //
+        case ScriptExit(code) => System.exit(code);
+        case ScriptRet(ret) => return ScriptRet(ret);
+        }
       case x => println("unknown command " + x);
     }
     ScriptOK;
   }
   val helpLines = List(
         "scriptname"->"show script engine name.",
-        "mode [run/step/exception]"->"set run mode in running script file.",
+        "mode [run/silent/step/exception]"->"set run mode in running script file.",
         "buffer"->"show the buffer content with which it inputs the next line.",
         "clear"->"clear the buffer content",
         "pre"->"remove the last line of buffer content",
         "help (check)"->"show help for command whose help name (with params) contains (check).",
         "method [classname/variable name] (check)"->"show methods whose name contains (check)",
         "constructor [classname/variable name]"->"show constructors",
+        "call [file]"->"call script [file]",
         "vars"->"show the variable names.(only scala)",
-        "quit"->"exit script shell.");
+        "quit(exit)"->"exit script shell.");
 
-
+  def runFile(f:File) : Any = {
+    callStack ::= f;
+    val retval = run(new BufferedReader(new FileReader(f)));
+    callStack = callStack.tail;
+    retval;
+  }
   def run(reader:BufferedReader) : Any = {
     var predisp = ">";
-    var preval : Any = null;
     var end = false;
     while (!end) {
-      print(predisp);
+      if (runMode != "silent") print(predisp);
       reader.readLine match {
         case null => end = true;
         case "" => // skip
         case line =>
           var debug = (runMode == "step");
-          println(line);
+          if (runMode != "silent") println(line);
           while (debug) {
             print("step>");
             val l = stdreader.readLine;
@@ -287,30 +313,36 @@ class ScriptShell(scriptname:String) {
           runline(line) match {
             case ScriptNone => // next
             case ScriptOK => // next
-            case ScriptExit(code) => return ScriptExit(code)
-            case ScriptRet(retval) => preval = retval;
+              lastVal = null;
+            case ScriptExit(code) => 
+              lastVal = ScriptExit(code);
+              return lastVal;
+            case ScriptRet(retval) => lastVal = retval;
             case ScriptException(e) =>
+              lastVal = e;
               bufferClear;
               e.printStackTrace(System.out);
               if (runMode == "exception") runMode = "step";
           }
       }
     }
-    ScriptRet(preval);
+    ScriptRet(lastVal);
   }
   def shell() : ScriptExit = {
     val reader = stdreader;
     var predisp = ">";
-    var preval : Any = null;
     while (true) {
       print(predisp);
       val line = reader.readLine;
       runline(line) match {
         case ScriptNone => // next
-        case ScriptOK => // next
-        case ScriptExit(code) => return ScriptExit(code)
-        case ScriptRet(retval) => preval = retval;
+        case ScriptOK => lastVal = null;
+        case ScriptExit(code) => 
+          lastVal = ScriptExit(code);
+          return ScriptExit(code);
+        case ScriptRet(retval) => lastVal = retval;
         case ScriptException(e) => 
+          lastVal = e;
           bufferClear;
           e.printStackTrace(System.out);
       }

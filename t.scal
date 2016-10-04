@@ -1,0 +1,3 @@
+var a = 2;
+java.lang.System.out.println("a=" + a);
+2

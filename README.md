@@ -1,6 +1,12 @@
 # ScriptShell
 
-    It's a tool to run script.
+    This is a tool to run script. 
+
+    It only run a step for each script line, so it cannot run into the calling method. 
+
+    ex. script-shell -i javascript
+
+    ex. script-shell -script test.scala -silent scala
 
 ## usage
 
@@ -17,6 +23,7 @@
     - options
         -script \[scriptfile] : run script file
         -i : interpreter after running the [scriptfile]
+        -init \[line] : run the script \[line] before start \[scriptfile]
 
     - language
         -scala : scala script
