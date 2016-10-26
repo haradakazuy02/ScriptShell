@@ -17,15 +17,17 @@ object ScriptShell {
       var interpreter = false;
       var inits : List[String] = Nil;
       var silent = false;
+      var encoding : String = null;
       var n = args.size;
       var skip = 0;
       for (i<-0 until args.size if n == args.size) {
         if (skip > 0) skip -= 1 else if (args(i).charAt(0) != '-') n = i else args(i) match {
-          case "-i" => interpreter = true;
-          case "-init" => skip = 1; inits :+= args(i+1);
-          case "-silent" => silent = true;
-          case "-script" => skip = 1; scriptfile = new File(args(i+1));
-          case _ => println("unknown option : " + args(i));
+        case "-i" => interpreter = true;
+        case "-init" => skip = 1; inits :+= args(i+1);
+        case "-silent" => silent = true;
+        case "-script" => skip = 1; scriptfile = new File(args(i+1));
+        case "-encoding" => skip = 1; encoding = args(i+1);
+        case _ => println("unknown option : " + args(i));
         }
       }
       if (n >= args.size) {
@@ -38,10 +40,10 @@ object ScriptShell {
         println(" -init [line] : run the script [line] before running [scriptfile].");
         println("       You can specify multiple options of this type.");
         println("   e.g. -init \":mode exception\" -init \"import java.io._\"");
+        println(" -encoding [enc] : read the [scriptfile] with the encoding.");
         System.exit(1);
       }
-      val _this = new ScriptShell(args(n));
-
+      val _this = new ScriptShell(args(n), encoding);
       val params = for (i<-(n+1) until args.size) yield {
         val k = args(i).indexOf('=');
         val key = args(i).substring(0, k);
@@ -59,7 +61,7 @@ if (!silent) println("[param]" + key + " = " + value);
         }
       }
       if (interpreter) _this.shell() match {
-        case ScriptExit(code) => System.exit(code);
+      case ScriptExit(code) => System.exit(code);
       }
       System.exit(0);
     } catch {
@@ -96,15 +98,24 @@ class BracketInputBuffer extends InputBuffer {
   override def addLine(line:String) = {
     if (!super.addLine(line)) false else {
       for (c<-line) c match {
-        case '{' => bracket += 1;
-        case '}' => bracket -= 1;
-        case _ => // skip
+      case '{' => bracket += 1;
+      case '}' => bracket -= 1;
+      case _ => // skip
       }
       (bracket == 0);
     }
   }
 }
-class ScriptShell(scriptname:String) {
+class PythonInputBuffer extends InputBuffer {
+  override def addLine(line:String) = {
+    if (!super.addLine(line)) false else {
+      if (lines.size == 0) {
+        if (line.endsWith(":")) false else true;
+      } else if (line.startsWith(" ")) false else if (line.endsWith(":")) false else true;
+    }
+  }
+}
+class ScriptShell(scriptname:String, encoding:String = null) {
   val (scriptEngine, buffer) = getEngine(scriptname);
   var runMode = "run";
   var lastVal : Any = null;
@@ -123,16 +134,18 @@ class ScriptShell(scriptname:String) {
     } else if (s.contains("scala")) {
       val imain = engine.asInstanceOf[IMain];
       imain.settings.usejavacp.value_$eq(true);
-      engine.eval("import scala.collection.convert.WrapAsScala._");
-      engine.eval("import scala.collection.convert.WrapAsJava._");
-      engine.eval("import scala.sys.process._");
-      engine.eval("import jp.gr.java_conf.harada.ScriptShell._");
+      engine.eval("import scala.collection.convert.WrapAsScala._;");
+      engine.eval("import scala.collection.convert.WrapAsJava._;");
+      engine.eval("import scala.sys.process._;");
+      engine.eval("import jp.gr.java_conf.harada.ScriptShell._;");
       imain.bind("_this", "jp.gr.java_conf.harada.ScriptShell", this);
       engine.eval("""implicit class ScriptShellCommand(private val sc:StringContext) extends AnyVal {
   def cmd(args:String*) : Any = _this.command(sc.standardInterpolator((s:String)=>s, args));
 }""");
-      new BracketInputBuffer
-    }  else new InputBuffer;
+      new BracketInputBuffer;
+    } else if (s.contains("python") || s.contains("jython")) {
+      new PythonInputBuffer;
+    } else new InputBuffer;
     (engine, buffer);
   }
   var iMain : IMain = if (scriptEngine.isInstanceOf[IMain]) scriptEngine.asInstanceOf[IMain] else null;
@@ -146,10 +159,10 @@ class ScriptShell(scriptname:String) {
   def eval(key:String) = scriptEngine.eval(key);
   def get(key:String) = scriptEngine.eval(key);
   def getVariableNames() : Iterable[String] = scriptEngine match {
-    case im : IMain => im.namedDefinedTerms.map(_.toString);
-    case _ => 
-//      scriptEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE).keySet;
-      throw new UnsupportedOperationException("I can't get variable names for Nashorn.");
+  case im : IMain => im.namedDefinedTerms.map(_.toString);
+  case _ => 
+//    scriptEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE).keySet;
+    throw new UnsupportedOperationException("I can get variable names for only scala.");
   }
   def bufferClear() {
     buffer.clear;
@@ -171,52 +184,52 @@ class ScriptShell(scriptname:String) {
   private def arg2Class(params:List[String]) = try {
     Class.forName(params.head);
   } catch {
-    case ce:ClassNotFoundException =>
-      try {
-        val obj = get(params.head).asInstanceOf[AnyRef];
-        obj.getClass;
-      } catch {
-        case e : Exception => 
-          val obj = eval(params.mkString(" "));
-          obj.getClass;
-      }
+  case ce:ClassNotFoundException =>
+    try {
+      val obj = get(params.head).asInstanceOf[AnyRef];
+      obj.getClass;
+    } catch {
+    case e : Exception => 
+      val obj = eval(params.mkString(" "));
+      obj.getClass;
+    }
   }
   def parseParams(line:String) : List[String] = {
     def tos(a:Any) : String = a match {
-      case null => "";
-      case s : String => s;
-      case x => x.toString;
+    case null => "";
+    case s : String => s;
+    case x => x.toString;
     }
     var retlist : List[String] = Nil;
     var mode = ' ';
     var sb = new StringBuilder;
     for (c<-line) mode match {
-      case ' ' => c match {
-        case ' ' => if (sb.size > 0) {retlist :+= sb.toString; sb = new StringBuilder;}
-        case '\"' => if (sb.size > 0) sb += c else mode = c;
-        case '\'' => if (sb.size > 0) sb += c else mode = c;
-        case '`' => if (sb.size > 0) sb += c else mode = c;
-        case _ => sb += c;
+    case ' ' => c match {
+      case ' ' => if (sb.size > 0) {retlist :+= sb.toString; sb = new StringBuilder;}
+      case '\"' => if (sb.size > 0) sb += c else mode = c;
+      case '\'' => if (sb.size > 0) sb += c else mode = c;
+      case '`' => if (sb.size > 0) sb += c else mode = c;
+      case _ => sb += c;
       }
-      case '\"' => c match {
-        case '\"' => mode = ' '; retlist :+= sb.toString;
-        case '\\' => mode = '\\';
-        case _ => sb += c;
+    case '\"' => c match {
+      case '\"' => mode = ' '; retlist :+= sb.toString;
+      case '\\' => mode = '\\';
+      case _ => sb += c;
       }
-      case '\'' => c match {
-        case '\'' => mode = ' '; retlist :+= sb.toString;
-        case _ => sb += c;
+    case '\'' => c match {
+      case '\'' => mode = ' '; retlist :+= sb.toString;
+      case _ => sb += c;
       }
-      case '`' => c match {
-        case '`' => 
-          retlist :+= tos(command(sb.toString));
-          mode = ' ';
-        case _ => sb += c;
+    case '`' => c match {
+      case '`' => 
+        retlist :+= tos(command(sb.toString));
+        mode = ' ';
+      case _ => sb += c;
       }
-      case '\\' => c match {
-        case '\"' => mode = '\"'; sb += c;
-        case '\\' => mode = '\"'; sb += c;
-        case x => throw new IllegalArgumentException("unknow escape : \\"  + x);
+    case '\\' => c match {
+      case '\"' => mode = '\"'; sb += c;
+      case '\\' => mode = '\"'; sb += c;
+      case x => throw new IllegalArgumentException("unknow escape : \\"  + x);
       }
     }
     if (sb.size > 0) retlist :+= sb.toString;
@@ -225,49 +238,49 @@ class ScriptShell(scriptname:String) {
   def command(line:String) = runCommand(parseParams(line));
   def runCommand(command:List[String]) : Any = {
     command.head match {
-      case "quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
-      case "exit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
-      case "scriptname" => println(scriptEngine.getFactory.getEngineName);
-      case "buffer" => buffer.show();
-      case "buffer" => buffer.show();
-      case "clear" => buffer.clear;
-      case "mode" => if (command.size <= 1) println("[mode]" + runMode) else command(1) match {
-        case "silent" => runMode = command(1);
-        case "run" => runMode = command(1);
-        case "step" => runMode = command(1);
-        case "exception" => runMode = command(1);
-        }
-      case "pre" => 
-        if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
-        buffer.show();
-      case "help" => 
-        val check : String = if (command.size == 1) null else command(1);
-        for (l<-helpLines if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
-      case "method" => 
-        val cls = arg2Class(command.tail);
-        val check : String = if (2 < command.size) command(2) else null;
-        var i = 0;
-        for (m<-cls.getMethods) {
-          i += 1;
-          if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
-        }
-      case "constructor" => 
-        val cls = arg2Class(command.tail);
-        var i = 0;
-        for (m<-cls.getConstructors) {
-          i += 1;
-          println("[" + i + "]" + m);
-        }
-      case "vars" => println(getVariableNames.mkString(", "));
-      case "step" => runMode = "step";
-      case "continue" => runMode = "exception";
-      case "call" =>
-        runFile(new File(command(1))) match {
-        case ScriptOK => //
-        case ScriptExit(code) => System.exit(code);
-        case ScriptRet(ret) => return ScriptRet(ret);
-        }
-      case x => println("unknown command " + x);
+    case "quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+    case "exit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+    case "scriptname" => println(scriptEngine.getFactory.getEngineName);
+    case "buffer" => buffer.show();
+    case "buffer" => buffer.show();
+    case "clear" => buffer.clear;
+    case "mode" => if (command.size <= 1) println("[mode]" + runMode) else command(1) match {
+      case "silent" => runMode = command(1);
+      case "run" => runMode = command(1);
+      case "step" => runMode = command(1);
+      case "exception" => runMode = command(1);
+      }
+    case "pre" => 
+      if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
+      buffer.show();
+    case "help" => 
+      val check : String = if (command.size == 1) null else command(1);
+      for (l<-helpLines if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
+    case "method" => 
+      val cls = arg2Class(command.tail);
+      val check : String = if (2 < command.size) command(2) else null;
+      var i = 0;
+      for (m<-cls.getMethods) {
+        i += 1; 
+        if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
+      }
+    case "constructor" => 
+      val cls = arg2Class(command.tail);
+      var i = 0;
+      for (m<-cls.getConstructors) {
+        i += 1;
+        println("[" + i + "]" + m);
+      }
+    case "vars" => println(getVariableNames.mkString(", "));
+    case "step" => runMode = "step";
+    case "continue" => runMode = "exception";
+    case "call" =>
+      runFile(new File(command(1))) match {
+      case ScriptOK => //
+      case ScriptExit(code) => System.exit(code);
+      case ScriptRet(ret) => return ScriptRet(ret);
+      }
+    case x => println("unknown command " + x);
     }
     ScriptOK;
   }
@@ -286,7 +299,8 @@ class ScriptShell(scriptname:String) {
 
   def runFile(f:File) : Any = {
     callStack ::= f;
-    val retval = run(new BufferedReader(new FileReader(f)));
+    val reader = if (encoding == null) new BufferedReader(new FileReader(f)) else new BufferedReader(new InputStreamReader(new FileInputStream(f), encoding));
+    val retval = run(reader);
     callStack = callStack.tail;
     retval;
   }
@@ -296,9 +310,10 @@ class ScriptShell(scriptname:String) {
     while (!end) {
       if (runMode != "silent") print(predisp);
       reader.readLine match {
-        case null => end = true;
-        case "" => // skip
-        case line =>
+      case null => end = true;
+      case line =>
+        val  skip = if (line != "") false else if (buffer.isInstanceOf[PythonInputBuffer]) (buffer.lines.size == 0) else true;
+        if (!skip) {
           var debug = (runMode == "step");
           if (runMode != "silent") println(line);
           while (debug) {
@@ -311,19 +326,20 @@ class ScriptShell(scriptname:String) {
             }
           }
           runline(line) match {
-            case ScriptNone => // next
-            case ScriptOK => // next
-              lastVal = null;
-            case ScriptExit(code) => 
-              lastVal = ScriptExit(code);
-              return lastVal;
-            case ScriptRet(retval) => lastVal = retval;
-            case ScriptException(e) =>
-              lastVal = e;
-              bufferClear;
-              e.printStackTrace(System.out);
-              if (runMode == "exception") runMode = "step";
+          case ScriptNone => // next
+          case ScriptOK => // next
+            lastVal = null;
+          case ScriptExit(code) => 
+            lastVal = ScriptExit(code);
+            return lastVal;
+          case ScriptRet(retval) => lastVal = retval;
+          case ScriptException(e) =>
+            lastVal = e;
+            bufferClear;
+            e.printStackTrace(System.out);
+            if (runMode == "exception") runMode = "step";
           }
+        }
       }
     }
     ScriptRet(lastVal);
@@ -335,16 +351,16 @@ class ScriptShell(scriptname:String) {
       print(predisp);
       val line = reader.readLine;
       runline(line) match {
-        case ScriptNone => // next
-        case ScriptOK => lastVal = null;
-        case ScriptExit(code) => 
-          lastVal = ScriptExit(code);
-          return ScriptExit(code);
-        case ScriptRet(retval) => lastVal = retval;
-        case ScriptException(e) => 
-          lastVal = e;
-          bufferClear;
-          e.printStackTrace(System.out);
+      case ScriptNone => // next
+      case ScriptOK => lastVal = null;
+      case ScriptExit(code) => 
+        lastVal = ScriptExit(code);
+        return ScriptExit(code);
+      case ScriptRet(retval) => lastVal = retval;
+      case ScriptException(e) => 
+        lastVal = e;
+        bufferClear;
+        e.printStackTrace(System.out);
       }
     }
     ScriptExit(0);
