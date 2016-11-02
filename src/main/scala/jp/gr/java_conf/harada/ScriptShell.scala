@@ -2,7 +2,8 @@ package jp.gr.java_conf.harada;
 import scala.collection.convert.WrapAsScala._
 import javax.script._
 import java.io._
-import scala.tools.nsc.interpreter.IMain;
+import scala.tools.nsc.interpreter._
+import scala.runtime._
 
 case class ScriptOK();
 case class ScriptNone();
@@ -70,6 +71,18 @@ if (!silent) println("[param]" + key + " = " + value);
     }
   }
   val stdreader = new BufferedReader(new InputStreamReader(System.in));
+  def println(o:Any) {
+    o match {
+    case a : AnyRef => System.out.println(a);
+    case x => System.out.println(x.toString);
+    }
+  }
+  def print(o:Any) {
+    o match {
+    case a : AnyRef => System.out.print(a);
+    case x => System.out.print(x.toString);
+    }
+  }
 }
 
 import ScriptShell._
@@ -124,43 +137,56 @@ class ScriptShell(scriptname:String, encoding:String = null) {
 
   def getEngine(scriptname:String) = {
     val sem = new ScriptEngineManager();
-    val engine = sem.getEngineByName(scriptname);
-    if (engine == null) throw new IllegalArgumentException("sciptnames : " + sem.getEngineFactories.map(_.getEngineName));
-
+    var engine = sem.getEngineByName(scriptname);
     val s = scriptname.toLowerCase;
+    if (engine == null) {
+      sem.getEngineFactories.find(_.getEngineName.toLowerCase contains s) match {
+      case Some(f) => engine = f.getScriptEngine;
+      case None => throw new IllegalArgumentException("sciptnames : " + sem.getEngineFactories.map(_.getEngineName));
+      }
+    }
+
     val buffer = if (s.contains("java")) {
       engine.put("_this", this);
       new BracketInputBuffer
     } else if (s.contains("scala")) {
-      val imain = engine.asInstanceOf[IMain];
-      imain.settings.usejavacp.value_$eq(true);
+      val imain = engine match {
+      case i : IMain =>
+        i.settings.usejavacp.value_$eq(true);
+        i;
+      case x => null;
+      }
       engine.eval("import scala.collection.convert.WrapAsScala._;");
       engine.eval("import scala.collection.convert.WrapAsJava._;");
       engine.eval("import scala.sys.process._;");
       engine.eval("import jp.gr.java_conf.harada.ScriptShell._;");
-      imain.bind("_this", "jp.gr.java_conf.harada.ScriptShell", this);
+      engine.put("_ScriptShell_a", this);
+      engine.eval("implicit val _this = _ScriptShell_a.asInstanceOf[jp.gr.java_conf.harada.ScriptShell];");
+/*
       engine.eval("""implicit class ScriptShellCommand(private val sc:StringContext) extends AnyVal {
   def cmd(args:String*) : Any = _this.command(sc.standardInterpolator((s:String)=>s, args));
 }""");
+*/
       new BracketInputBuffer;
     } else if (s.contains("python") || s.contains("jython")) {
       new PythonInputBuffer;
     } else new InputBuffer;
     (engine, buffer);
   }
-  var iMain : IMain = if (scriptEngine.isInstanceOf[IMain]) scriptEngine.asInstanceOf[IMain] else null;
 
   def put(key:String, value:AnyRef) {
     scriptEngine.put(key, value);
   }
   def putWithType(key:String, value:AnyRef, typename:String) {
-    if (iMain != null) iMain.bind(key, typename, value) else scriptEngine.put(key, value);
-  }
+    scriptEngine.put("_ScriptShell_a", value);
+    scriptEngine.eval(s"val ${key} = _ScriptShell_a.asInstanceOf[${typename}];");
+ }
   def eval(key:String) = scriptEngine.eval(key);
   def get(key:String) = scriptEngine.eval(key);
   def getVariableNames() : Iterable[String] = scriptEngine match {
   case im : IMain => im.namedDefinedTerms.map(_.toString);
-  case _ => 
+  case sc: Scripted => sc.intp.namedDefinedTerms.map(_.toString);
+  case _ =>
 //    scriptEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE).keySet;
     throw new UnsupportedOperationException("I can get variable names for only scala.");
   }

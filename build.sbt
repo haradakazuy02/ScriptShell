@@ -4,11 +4,13 @@ name := "scriptshell"
 
 version := "0.2-SNAPSHOT"
 
-scalaVersion := "2.11.8"
+val scalaVer = "2.12.0"
+
+scalaVersion := scalaVer
 
 libraryDependencies ++= Seq(
-  "org.scala-lang" % "scala-library" % "2.11.8",
-  "org.scala-lang" % "scala-compiler" % "2.11.8",
-  "org.scala-lang" % "scala-reflect" % "2.11.8")
+  "org.scala-lang" % "scala-library" % scalaVer,
+  "org.scala-lang" % "scala-compiler" % scalaVer,
+  "org.scala-lang" % "scala-reflect" % scalaVer)
 
 enablePlugins(JavaAppPackaging)
