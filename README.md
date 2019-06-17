@@ -6,7 +6,7 @@
 
     ex. script-shell -i javascript
 
-    ex. script-shell -script test.scala -silent scala
+    ex. script-shell -f test.scala --silent scala
 
 ## usage
 
@@ -21,13 +21,13 @@
     target\pack\bin\script-shell (options) \[language] (name1=value1) (name2=value2)..
 
     - options
-        -script \[scriptfile] : run script file
-        -i : interpreter after running the [scriptfile]
-        -init \[line] : run the script \[line] before start \[scriptfile]
+        - -f, --file \[scriptfile] : run script file
+        - -i, --interactive : run interactively after running [scriptfile]
+        - -b, --before \[line] : run the script \[line] before start \[scriptfile]
 
     - language
-        -scala : scala script
-        -javascript : java script
+        - scala : scala script
+        - javascript : java script
 
     - name=value
         set the value to the variable for the name.
@@ -36,12 +36,16 @@
 
     For javascript, it recognize block end by bracket. So you should not input:
 
+    [wrong]
+
     for (i=0;i<10;i++)
     {
       print(i);
     }
 
-    but should:
+    but you should :
+
+    [right]
 
     for (i=0;i<10;i++) {
       print(i);
