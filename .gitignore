@@ -1,4 +1,5 @@
 mk.cmd
+scsh.cmd
 target/
 project/build.properties
 project/project/

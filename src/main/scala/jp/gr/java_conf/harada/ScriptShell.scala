@@ -2,13 +2,15 @@ package jp.gr.java_conf.harada;
 import scala.collection.JavaConverters._
 import javax.script._
 import java.io._
+import java.nio.file._
 import scala.tools.nsc.interpreter.IMain
 import scala.tools.nsc.interpreter.shell.Scripted
 import scala.runtime._
 import scala.concurrent._
+import scala.sys.process._
 import java.lang.reflect.{Method,Constructor,Modifier}
 
-case class ScriptOK();
+case class ScriptOK(ret:Any);
 case class ScriptNone();
 case class ScriptRet(retval:Any);
 case class ScriptException(exception:Throwable);
@@ -17,10 +19,10 @@ case class ScriptExit(code:Int);
 object ScriptShell {
   def main(args:Array[String]) {
     try {
+      var quiet = false;
       var scriptfile : File = null;
       var interactive = false;
       var inits : List[String] = Nil;
-      var silent = false;
       var encoding : String = null;
       var n = args.size;
       var skip = 0;
@@ -30,7 +32,8 @@ object ScriptShell {
         case "--interactive" => interactive = true;
         case "-p" => skip = 1; inits :+= args(i+1);
         case "--previous" => skip = 1; inits :+= args(i+1);
-        case "--silent" => silent = true;
+        case "-q" => quiet = true;
+        case "--quiet" => quiet = true;
         case "-f" => skip = 1; scriptfile = new File(args(i+1));
         case "--file" => skip = 1; scriptfile = new File(args(i+1));
         case "-e" => skip = 1; encoding = args(i+1);
@@ -44,23 +47,24 @@ object ScriptShell {
         println("(options)");
         println(" -f, --file [scriptfile] : run the content of [scriptfile].");
         println(" -i, --interactive : run interactively after the [scriptfile].");
-        println(" --silent : not show running line.(= -init \":mode silent\"))");
+        println(" -q, --quiet : not show running line.(= -p \":mode quiet\"))");
         println(" -p, --previous [line] : run [line] before running [scriptfile].");
         println("       You can specify multiple options of this type.");
         println("   e.g. -p \":mode exception\" -p \"import java.io._\"");
         println(" -e, --encoding [enc] : read the [scriptfile] with the encoding.");
+        println("ex. script-shell -i scala");
+        println("ex. script-shell -f test.js -q javascript");
         System.exit(1);
       }
-      val _this = new ScriptShell(args(n), encoding);
+      val _this = new ScriptShell(args(n), encoding, quiet);
       val params = for (i<-(n+1) until args.size) yield {
         val k = args(i).indexOf('=');
         val key = args(i).substring(0, k);
         val value = args(i).substring(k+1);
-if (!silent) println("[param]" + key + " = " + value);
+if (!quiet) println("[param]" + key + " = " + value);
         _this.put(key,value);
       }
       for (l<-inits) _this.runline(l);
-      if (silent) _this.runMode = "silent";
       if (scriptfile != null) {
         _this.runFile(scriptfile) match {
         case ScriptOK => //
@@ -80,15 +84,29 @@ if (!silent) println("[param]" + key + " = " + value);
   val stdreader = new BufferedReader(new InputStreamReader(System.in));
   def println(o:Any) {
     o match {
+    case null => System.out.println("[null]");
     case a : AnyRef => System.out.println(a);
     case x => System.out.println(x.toString);
     }
   }
   def print(o:Any) {
     o match {
+    case null => System.out.print("[null]");
     case a : AnyRef => System.out.print(a);
     case x => System.out.print(x.toString);
     }
+  }
+  val isWin = {
+    val name = java.lang.System.getProperty("os.name");
+    if ((name != null) && name.toLowerCase.contains("win")) true else false;
+  }
+  def exec(s:String)(implicit ss : ScriptShell) = ss.exec(s)
+  def sh(s:String)(implicit ss : ScriptShell) = ss.sh(s)
+  def $(s:String)(implicit ss : ScriptShell) = ss.$(s)
+  def pwd(implicit ss : ScriptShell) = ss.workDir.getPath
+  def walkFiles(path:String)(implicit ss : ScriptShell) = ss.walkFiles(path)
+  def exit(code:Int = 0) = {
+    System.exit(code)
   }
 }
 
@@ -100,11 +118,14 @@ class InputBuffer {
   def isEmpty = {
     lines.find(_.size > 0) == None
   }
-  def show() {
+  def show() = {
     for (line<-lines) println(line);
+    lines
   }
-  def clear() {
+  def clear() = {
+    val retval = lines
     lines = Nil;
+    retval
   }
   def addLine(line:String) = {
     lines :+= line;
@@ -114,9 +135,10 @@ class InputBuffer {
 
 class BracketInputBuffer extends InputBuffer {
   var bracket = 0;
-  override def clear() {
-    super.clear();
+  override def clear() = {
+    val retval = super.clear();
     bracket = 0;
+    retval
   }
   override def addLine(line:String) = {
     if (!super.addLine(line)) false else {
@@ -142,28 +164,12 @@ class PythonInputBuffer extends InputBuffer {
 import java.util.concurrent.ConcurrentLinkedQueue
 import scala.util._
 
-/*
-class LineReader(reader:BufferedReader) {
-  val lines = new ConcurrentLinkedQueue[String]();
-  def addLine(line:String) {
-    lines.add(line);
-  }
-  def nextLine() = if (lines.isEmpty) None else Some(lines.poll);
-
-  var end = false;
-  while (!end) {
-    Try {
-      if (reader.ready) reader.readLine else throw new IllegalStateException("not ready");
-    }
-  }
-}
-*/
-
-class ScriptShell(scriptname:String, encoding:String = null) {
+class ScriptShell(scriptname:String, encoding:String = null, quiet:Boolean=false) {
   val (scriptEngine, buffer) = getEngine(scriptname);
-  var runMode = "run";
+  var runMode = if (quiet) "quiet" else "run";
   var lastVal : Any = null;
   var callStack : List[File] = Nil;
+  var workDir = new File(".").getCanonicalFile();
   def base : File = if (callStack == Nil) null else callStack.head;
 
   def getEngine(scriptname:String) = {
@@ -180,7 +186,12 @@ class ScriptShell(scriptname:String, encoding:String = null) {
 
     val buffer = if (s.contains("javascript")) {
       engine.put("_this", this);
+      engine.put("isWin", isWin);
       engine.eval("function println(target) { print(target) }");
+      engine.eval("function $(cmd) { return _this.$(cmd); }");
+      engine.eval("function sh(cmd) { return _this.sh(cmd); }");
+      engine.eval("function pwd() { return _this.workDir().getPath(); }");
+      engine.eval("function walkFiles(path) { return _this.walkFiles(path); }");
       new BracketInputBuffer
     } else if (s.contains("scala")) {
       val imain = engine match {
@@ -195,18 +206,12 @@ class ScriptShell(scriptname:String, encoding:String = null) {
       engine.eval("import jp.gr.java_conf.harada.ScriptShell._;");
       engine.put("_ScriptShell_a", this);
       engine.eval("implicit val _this : jp.gr.java_conf.harada.ScriptShell = _ScriptShell_a.asInstanceOf[jp.gr.java_conf.harada.ScriptShell];");
-/*
-      engine.eval("""implicit class ScriptShellCommand(private val sc:StringContext) extends AnyVal {
-  def cmd(args:String*) : Any = _this.command(sc.standardInterpolator((s:String)=>s, args));
-}""");
-*/
       new BracketInputBuffer;
     } else if (s.contains("python") || s.contains("jython")) {
       new PythonInputBuffer;
     } else new InputBuffer;
     (engine, buffer);
   }
-
   def put(key:String, value:AnyRef) {
     scriptEngine.put(key, value);
   }
@@ -231,12 +236,25 @@ class ScriptShell(scriptname:String, encoding:String = null) {
   }
   def runline(line:String) : Any = {
     try {
-      if (line == "?") runCommand(List("help")) else 
-      if (line.startsWith(":")) command(line.substring(1)) else
-      if (!buffer.addLine(line)) ScriptNone else if (buffer.isEmpty) ScriptNone else {
-        val ret = scriptEngine.eval(buffer.lines.mkString("\n"));
-        buffer.clear;
-        ScriptRet(ret);
+      if (line.size == 0) ScriptNone else line.charAt(0) match {
+      case '?' => runCommand("help" :: (line.substring(1).split(" ").toList))
+      case ':' => command(line.substring(1))
+      case _ =>
+        if (runMode == "command") {
+          if (line.endsWith("\\")) {
+            buffer.addLine(line.substring(0, line.size - 1))
+            ScriptNone
+          } else {
+            buffer.addLine(line)
+            val code = sh(buffer.lines.mkString("\n"));
+            buffer.clear
+            ScriptRet(code);
+          }
+        } else if (!buffer.addLine(line)) ScriptNone else if (buffer.isEmpty) ScriptNone else {
+          val ret = scriptEngine.eval(buffer.lines.mkString("\n"));
+          buffer.clear;
+          ScriptRet(ret);
+        }
       }
     } catch {
       case t:Throwable => ScriptException(t);
@@ -297,70 +315,124 @@ class ScriptShell(scriptname:String, encoding:String = null) {
     if (sb.size > 0) retlist :+= sb.toString;
     retlist;
   }
+  def exec(cmd:String) = {
+    Process(cmd, Some(workDir)).!
+  }
+  def sh(cmd:String) = {
+    val pb : ProcessBuilder = if (isWin) Process("cmd /C " + cmd, Some(workDir)) else Process("sh " + cmd, Some(workDir));
+    pb.!
+  }
+  def $(cmd:String) = {
+    val pb : ProcessBuilder = if (isWin) Process("cmd /C " + cmd, Some(workDir)) else Process("sh " + cmd, Some(workDir));
+    pb.!!
+  }
+  def walkFiles(path:String) = Files.walk(Paths.get(path)).iterator().asScala.map(_.toString).toArray
   def command(line:String) = runCommand(parseParams(line));
   def runCommand(command:List[String]) : Any = {
     command.head match {
-    case "quit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
-    case "exit" => return if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
-    case "enginename" => println(scriptEngine.getFactory.getEngineName);
-    case "buffer" => buffer.show();
-    case "buffer" => buffer.show();
-    case "clear" => buffer.clear;
+    case "quit" => if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+    case "exit" => if (command.size > 1) ScriptExit(command(1).toInt) else ScriptExit(0);
+    case "enginename" => 
+      val name = scriptEngine.getFactory.getEngineName;
+      println(name);
+      ScriptOK(name);
+    case "buffer" => 
+      ScriptOK(buffer.show());
+    case "clear" => ScriptOK(buffer.clear);
     case "mode" => if (command.size <= 1) println("[mode]" + runMode) else command(1) match {
-      case "silent" => runMode = command(1);
-      case "run" => runMode = command(1);
-      case "step" => runMode = command(1);
-      case "exception" => runMode = command(1);
+      case "quiet" => runMode = command(1); ScriptOK(command(1));
+      case "run" => runMode = command(1); ScriptOK(command(1));
+      case "step" => runMode = command(1); ScriptOK(command(1));
+      case "exception" => runMode = command(1); ScriptOK(command(1));
+      case "command" => runMode = command(1); ScriptOK(command(1));
       }
     case "pre" => 
       if (buffer.lines.size > 0) buffer.lines = buffer.lines.take(buffer.lines.size - 1);
-      buffer.show();
+      ScriptOK(buffer.show());
+    case "last" => 
+      println(lastVal);
+      if (command.size > 1) lastVal match {
+      case null => putWithType(command(1), null, "Null")
+      case obj : AnyRef => try {
+          putWithType(command(1), obj, obj.getClass.getName);
+        } catch {
+        case se: Exception => 
+          println("cannot store as '" + obj.getClass.getName + "', so it only puts to " + command(1))
+          put(command(1), obj);
+        }
+      case a : Any => println("not AnyRef : variable '" + command(1) + "' is not stored.")
+      }
+      ScriptOK(lastVal);
     case "help" => 
       val check : String = if (command.size == 1) null else command(1);
       for (l<-helpMethods if (check == null) || l._1.contains(check)) println(l._1 + " =>" + l._2);
       for (l<-helpCommands if (check == null) || l._1.contains(check)) println(":" + l._1 + " =>" + l._2);
+      ScriptOK(lastVal);
     case "method" => 
       val cls = arg2Class(command.tail);
       val check : String = if (2 < command.size) command(2) else null;
+      var retval : List[String] = Nil
       var i = 0;
       for (m<-cls.getMethods) {
-        i += 1; 
-        if ((check == null) || m.getName.contains(check)) println("[" + i + "]" + m);
+        i += 1;
+        if ((check == null) || m.getName.contains(check)) retval :+= ("[" + i + "]" + m);
       }
+      println(retval.mkString("\n"))
+      ScriptOK(retval);
     case "constructor" => 
       val cls = arg2Class(command.tail);
       var i = 0;
+      var retval : List[String] = Nil
       for (m<-cls.getConstructors) {
         i += 1;
-        println("[" + i + "]" + m);
+        retval :+= ("[" + i + "]" + m);
       }
-    case "vars" => println(getVariableNames.mkString(", "));
-    case "step" => runMode = "step";
-    case "continue" => runMode = "exception";
+      println(retval.mkString("\n"))
+      ScriptOK(retval);
+    case "vars" => 
+      val retval = getVariableNames
+      println(retval.mkString(", "));
+      ScriptOK(retval)
+    case "step" => runMode = "step"; ScriptOK("step");
+    case "continue" => runMode = "exception"; ScriptOK("exception");
+    case "command" => runMode = "command"; ScriptOK("command");
+    case "pwd" => println(workDir.getPath); ScriptOK(workDir);
+    case "cd" => workDir = new File(workDir, command(1)).getCanonicalFile; ScriptOK(workDir);
     case "run" =>
       runFile(new File(command(1))) match {
-      case ScriptOK => //
-      case ScriptExit(code) => System.exit(code);
-      case ScriptRet(ret) => return ScriptRet(ret);
+      case ScriptOK(ret) => ScriptOK(ret)
+      case ScriptExit(code) => System.exit(code); ScriptExit(code);
+      case ScriptRet(ret) => ScriptRet(ret);
       }
-    case x => println("unknown command " + x);
+    case x => println("unknown command " + x); ScriptOK(null)
     }
-    ScriptOK;
   }
   val helpCommands = List(
         "enginename"->"show script engine name.",
-        "mode (run/silent/step/exception)"->"set/show the mode running the script.",
+        "mode (run/quiet/step/exception)"->"set/show the mode running the script.",
+        "command"->":mode command",
+        "continue"->":mode exception",
+        "step"->":mode step",
         "buffer"->"show the buffer content with which it inputs the next line.",
         "clear"->"clear the buffer content",
         "pre"->"remove the last line of buffer content",
         "help (check)"->"show help for command whose help name (with params) contains (check).",
+        "run [file]"->"run script file.",
         "method [classname/variable name] (check)"->"show methods whose name contains (check)",
         "constructor [classname/variable name]"->"show constructors",
-        "run [file]"->"run script [file]",
+        "pwd"->"show the working directory to command.",
+        "cd [relpath]"->"change the working directory.",
+        "last (name)"->"show the last line result(, and set the variable)",
         "vars"->"show the variable names.(only scala)",
-        "quit(exit)"->"exit script shell.");
+        "quit/exit (code)"->"system exit with code(default 0)");
   val helpMethods = List(
-        "println(xx)"->"show xx.")
+        "exit(code)"->"system exit with code",
+        "println(object)"->"show xx.",
+        "walkFiles(path)"->"get files of the file tree",
+        "isWin"->"true if windows",
+        "sh(\"command\")"->"exit value of os command.",
+        "exec(\"command\")"->"exit value of os executalbe.",
+        "$(\"command\")"->"output string of os command.")
   def runFile(f:File) : Any = {
     callStack ::= f;
     val reader = if (encoding == null) new BufferedReader(new FileReader(f)) else new BufferedReader(new InputStreamReader(new FileInputStream(f), encoding));
@@ -372,14 +444,14 @@ class ScriptShell(scriptname:String, encoding:String = null) {
     var predisp = ">";
     var end = false;
     while (!end) {
-      if (runMode != "silent") print(predisp);
+      if (runMode != "quiet") print(predisp);
       reader.readLine match {
       case null => end = true;
       case line =>
         val  skip = if (line != "") false else if (buffer.isInstanceOf[PythonInputBuffer]) (buffer.lines.size == 0) else true;
         if (!skip) {
           var debug = (runMode == "step");
-          if (runMode != "silent") println(line);
+          if (runMode != "quiet") println(line);
           while (debug) {
             print("step>");
             val l = stdreader.readLine;
@@ -391,8 +463,9 @@ class ScriptShell(scriptname:String, encoding:String = null) {
           }
           runline(line) match {
           case ScriptNone => // next
-          case ScriptOK => // next
-            lastVal = null;
+          case ScriptOK(ret) => // next
+            lastVal = ret;
+            if (runMode == "command") predisp = workDir.getPath + ">"
           case ScriptExit(code) => 
             lastVal = ScriptExit(code);
             return lastVal;
@@ -417,7 +490,9 @@ class ScriptShell(scriptname:String, encoding:String = null) {
       val line = reader.readLine;
       runline(line) match {
       case ScriptNone => // next
-      case ScriptOK => lastVal = null;
+      case ScriptOK(ret) => 
+        lastVal = ret;
+        if (runMode == "command") predisp = workDir.getPath + ">"
       case ScriptExit(code) => 
         lastVal = ScriptExit(code);
         return ScriptExit(code);
